@@ -159,6 +159,15 @@
   </div>
 </div>
 <div id="overlay"><div id="sheet"></div></div>
+<div id="confirmOverlay" style="position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:60; display:none; align-items:center; justify-content:center; padding:24px;">
+  <div id="confirmBox" style="background:var(--panel); border:1px solid var(--line-strong); border-radius:16px; padding:22px; width:100%; max-width:340px; text-align:center;">
+    <div id="confirmMsg" style="font-size:14.5px; color:var(--paper); margin-bottom:20px; line-height:1.5;"></div>
+    <div style="display:flex; gap:10px;">
+      <button id="confirmCancel" style="flex:1; padding:12px; border-radius:11px; border:1px solid var(--line-strong); background:var(--panel-2); color:var(--paper); font-weight:600; font-size:14px; cursor:pointer; font-family:inherit;">Cancelar</button>
+      <button id="confirmOk" style="flex:1; padding:12px; border-radius:11px; border:none; background:var(--coral); color:#fff; font-weight:700; font-size:14px; cursor:pointer; font-family:inherit;">Excluir</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const CATS_SAIDA = [
@@ -191,8 +200,36 @@ let state = { transactions: [], recurring: [] };
 let currentTab = 'lancamento';
 let editingTx = null;
 let calMonth = null;
+let carteiraMonth = null;
+let searchTerm = '';
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+
+function showConfirm(message){
+  return new Promise((resolve)=>{
+    const co = document.getElementById('confirmOverlay');
+    const okBtn = document.getElementById('confirmOk');
+    const cancelBtn = document.getElementById('confirmCancel');
+    document.getElementById('confirmMsg').textContent = message;
+    okBtn.textContent = 'Excluir';
+    cancelBtn.style.display = '';
+    co.style.display = 'flex';
+    okBtn.onclick = ()=>{ co.style.display='none'; resolve(true); };
+    cancelBtn.onclick = ()=>{ co.style.display='none'; resolve(false); };
+  });
+}
+function showAlert(message){
+  return new Promise((resolve)=>{
+    const co = document.getElementById('confirmOverlay');
+    const okBtn = document.getElementById('confirmOk');
+    const cancelBtn = document.getElementById('confirmCancel');
+    document.getElementById('confirmMsg').textContent = message;
+    okBtn.textContent = 'OK';
+    cancelBtn.style.display = 'none';
+    co.style.display = 'flex';
+    okBtn.onclick = ()=>{ co.style.display='none'; cancelBtn.style.display=''; resolve(true); };
+  });
+}
 function fmt(n){
   const neg = n < 0;
   const v = Math.abs(n).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
@@ -226,6 +263,7 @@ async function loadState(){
     else { state = { transactions: [], recurring: [] }; await saveState(); }
   }catch(e){ state = { transactions: [], recurring: [] }; }
   calMonth = monthKey(todayISO());
+  carteiraMonth = monthKey(todayISO());
   document.getElementById('loading').style.display='none';
   document.getElementById('app').style.display='flex';
   render();
@@ -277,24 +315,39 @@ function render(){
 
 // ---------- Lançamento tab ----------
 function renderLancamento(){
-  const today = todayISO();
-  const entries = buildLedger().filter(e=>e.date<=today).sort((a,b)=> b.date.localeCompare(a.date) || (b.createdAt||0)-(a.createdAt||0));
-  const list = entries.slice(0,30);
+  const entries = buildLedger().sort((a,b)=> b.date.localeCompare(a.date) || (b.createdAt||0)-(a.createdAt||0));
+  const term = searchTerm.trim().toLowerCase();
+  const filtered = term ? entries.filter(e=>{
+    const cat = CAT_MAP[e.category] || {lb:''};
+    return (e.desc||'').toLowerCase().includes(term) || cat.lb.toLowerCase().includes(term);
+  }) : entries;
+  const list = filtered.slice(0, term ? 100 : 30);
   return `
-    <div class="section-title"><h2>Últimos lançamentos</h2></div>
+    <div class="section-title"><h2>Últimos lançamentos</h2><span class="action" id="newRecBtn">+ conta fixa</span></div>
+    <div class="field" style="margin-bottom:16px;">
+      <input id="searchInput" type="text" placeholder="Buscar por descrição ou categoria..." value="${escapeHtml(searchTerm)}" style="width:100%; background:var(--panel-2); border:1px solid var(--line-strong); color:var(--paper); padding:11px 13px; border-radius:11px; font-size:14.5px; font-family:inherit;">
+    </div>
     <div class="ledger">
-      ${list.length ? list.map(ledgerRowHTML).join('') : '<div class="empty">Nenhum lançamento ainda.<br>Toque no + pra começar.</div>'}
+      ${list.length ? list.map(ledgerRowHTML).join('') : `<div class="empty">${term ? 'Nada encontrado pra "'+escapeHtml(searchTerm)+'".' : 'Nenhum lançamento ainda.<br>Toque no + pra começar.'}</div>`}
     </div>
   `;
 }
 function ledgerRowHTML(e){
   const cat = CAT_MAP[e.category] || {ic:'✳️', lb:'Outros'};
   const d = new Date(e.date+'T00:00:00');
+  let dateLabel = d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
+  if(!e.isRecurring && e.createdAt){
+    const createdDateStr = new Date(e.createdAt).toISOString().slice(0,10);
+    if(createdDateStr !== e.date){
+      const dc = new Date(createdDateStr+'T00:00:00');
+      dateLabel = `Lançado ${dc.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})} · Programada para ${d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})}`;
+    }
+  }
   return `<div class="ledger-row" data-entry="${e.id}" data-recurring="${e.isRecurring?1:0}">
     <div class="icon">${cat.ic}</div>
     <div class="info">
       <div class="desc">${escapeHtml(e.desc || cat.lb)} ${e.isRecurring?'<span class="tag">fixo</span>':''}</div>
-      <div class="meta">${d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})} · ${cat.lb}</div>
+      <div class="meta">${dateLabel} · ${cat.lb}</div>
     </div>
     <div class="amt ${e.type==='entrada'?'in':'out'}">${e.type==='entrada'?'+':'-'} ${fmt(e.amount).replace('R$ ','')}</div>
   </div>`;
@@ -314,26 +367,14 @@ function renderCalendario(){
   for(let day=1; day<=total; day++){
     const dateStr = calMonth+'-'+pad2(day);
     const itemsToday = state.recurring.filter(it=>recIsActive(it,calMonth) && clampDay(calMonth,it.dueDay)===day);
-    const hasIn = itemsToday.some(it=>it.type==='entrada');
-    const hasOut = itemsToday.some(it=>it.type==='saida');
+    const txToday = state.transactions.filter(t=>t.date===dateStr);
+    const hasIn = itemsToday.some(it=>it.type==='entrada') || txToday.some(t=>t.type==='entrada');
+    const hasOut = itemsToday.some(it=>it.type==='saida') || txToday.some(t=>t.type==='saida');
     cells += `<div class="cal-day ${dateStr===today?'today':''}" data-day="${day}">
       <div class="num">${day}</div>
       <div class="dots">${hasIn?'<div class="dot in"></div>':''}${hasOut?'<div class="dot out"></div>':''}</div>
     </div>`;
   }
-
-  const activeItems = state.recurring.filter(it=>recIsActive(it,calMonth)).sort((a,b)=>a.dueDay-b.dueDay);
-  const recRows = activeItems.map(it=>{
-    const last = recIsLast(it, calMonth);
-    const occ = getOcc(it, calMonth);
-    return `<div class="rec-row" data-rec="${it.id}">
-      <div class="top">
-        <div class="name">${CAT_MAP[it.category]?.ic||''} ${escapeHtml(it.name)}${last?'<span class="badge-last">última parcela</span>':''}</div>
-        <div class="amt ${it.type==='entrada'?'in':'out'}" style="font-weight:600; font-size:14px;">${occ.amount!=null ? fmt(occ.amount) : '—'}</div>
-      </div>
-      <div class="meta">Dia ${it.dueDay} · ${it.type==='entrada'?'a receber':'a pagar'} ${occ.paid?'· ✓ pago':''}</div>
-    </div>`;
-  }).join('');
 
   return `
     <div class="cal-header">
@@ -349,8 +390,10 @@ function renderCalendario(){
       <span><span class="sw" style="background:var(--mint);"></span>a receber</span>
       <span><span class="sw" style="background:var(--coral);"></span>a pagar</span>
     </div>
-    <div class="section-title"><h2>Contas fixas do mês</h2><span class="action" id="newRecBtn">+ nova</span></div>
-    ${recRows || '<div class="empty">Nenhuma conta fixa/recorrente neste mês.</div>'}
+    <div class="hint" style="text-align:center; margin-top:16px;">Toque num dia pra ver ou lançar contas daquela data.</div>
+    <div style="text-align:center; margin-top:10px;">
+      <span class="action" id="newRecBtn">+ nova conta fixa</span>
+    </div>
   `;
 }
 
@@ -359,28 +402,10 @@ function renderCarteira(){
   const today = todayISO();
   const saldo = saldoAte(today);
   const hasAny = state.transactions.length>0 || state.recurring.length>0;
-  const curMk = monthKey(today);
-  const t = monthTotals(curMk);
+  const t = monthTotals(carteiraMonth);
+  const monthLabelCarteira = new Date(carteiraMonth+'-01T00:00:00').toLocaleDateString('pt-BR',{month:'long', year:'numeric'});
 
-  const now = new Date();
-  const months = [];
-  for(let i=5;i>=0;i--){ const d = new Date(now.getFullYear(), now.getMonth()-i, 1); months.push(d.toISOString().slice(0,7)); }
-  const totalsArr = months.map(mk=>({mk, ...monthTotals(mk)}));
-  const maxV = Math.max(1, ...totalsArr.map(x=>Math.max(x.entradas,x.saidas)));
-  const bars = totalsArr.map(x=>{
-    const d = new Date(x.mk+'-01T00:00:00');
-    const hIn = Math.max(3, (x.entradas/maxV)*100);
-    const hOut = Math.max(3, (x.saidas/maxV)*100);
-    return `<div class="bar-col">
-      <div style="display:flex; gap:3px; align-items:flex-end; height:100%; width:100%; justify-content:center;">
-        <div class="bar fill" style="height:${hIn}%; width:11px;"></div>
-        <div class="bar" style="height:${hOut}%; width:11px; background:var(--coral);"></div>
-      </div>
-      <div class="lbl">${d.toLocaleDateString('pt-BR',{month:'short'}).replace('.','')}</div>
-    </div>`;
-  }).join('');
-
-  const saidaEntries = buildLedger().filter(e=>monthKey(e.date)===curMk && e.type==='saida');
+  const saidaEntries = buildLedger().filter(e=>monthKey(e.date)===carteiraMonth && e.type==='saida');
   const byCat = {};
   saidaEntries.forEach(e=>{ byCat[e.category] = (byCat[e.category]||0) + e.amount; });
   const catTotal = Object.values(byCat).reduce((a,b)=>a+b,0) || 1;
@@ -404,6 +429,11 @@ function renderCarteira(){
     <button class="save-btn" id="adjustBtn" style="background:var(--panel-2); color:var(--paper); border:1px solid var(--line-strong); margin-bottom:8px;">Fazer um ajuste (entrada/saída avulsa)</button>
 
     <div class="section-title"><h2>Resumo do mês</h2></div>
+    <div class="cal-header" style="margin-bottom:14px;">
+      <div class="cal-nav" id="carPrev">‹</div>
+      <div class="cal-title" style="text-transform:capitalize; font-size:15px;">${monthLabelCarteira}</div>
+      <div class="cal-nav" id="carNext">›</div>
+    </div>
     <div class="summary-grid">
       <div class="summary-card"><div class="lbl">Entradas</div><div class="val" style="color:var(--mint)">${fmt(t.entradas)}</div></div>
       <div class="summary-card"><div class="lbl">Saídas</div><div class="val" style="color:var(--coral)">${fmt(t.saidas)}</div></div>
@@ -411,13 +441,6 @@ function renderCarteira(){
         <div><div class="lbl">Performance (entradas − saídas)</div></div>
         <div class="val" style="color:${t.performance>=0?'var(--mint)':'var(--coral)'}">${fmt(t.performance)}</div>
       </div>
-    </div>
-
-    <div class="section-title"><h2>Entradas x Saídas</h2><span style="font-size:11px;color:var(--muted);">6 meses</span></div>
-    <div class="bars">${bars}</div>
-    <div style="display:flex; gap:14px; font-size:11px; color:var(--muted); margin-bottom:6px;">
-      <span><span style="display:inline-block;width:8px;height:8px;background:var(--gold);border-radius:2px;margin-right:5px;"></span>entradas</span>
-      <span><span style="display:inline-block;width:8px;height:8px;background:var(--coral);border-radius:2px;margin-right:5px;"></span>saídas</span>
     </div>
 
     <div class="section-title"><h2>Saídas por categoria</h2></div>
@@ -458,6 +481,20 @@ function attachContentEvents(){
   if(calNext) calNext.onclick = ()=>{ calMonth = shiftMonth(calMonth,1); render(); };
   const newRecBtn = document.getElementById('newRecBtn');
   if(newRecBtn) newRecBtn.onclick = ()=> openRecFormSheet(null);
+  const searchInput = document.getElementById('searchInput');
+  if(searchInput){
+    searchInput.oninput = (e)=>{
+      searchTerm = e.target.value;
+      const cursorPos = e.target.selectionStart;
+      render();
+      const newInput = document.getElementById('searchInput');
+      if(newInput){ newInput.focus(); newInput.setSelectionRange(cursorPos, cursorPos); }
+    };
+  }
+  const carPrev = document.getElementById('carPrev');
+  const carNext = document.getElementById('carNext');
+  if(carPrev) carPrev.onclick = ()=>{ carteiraMonth = shiftMonth(carteiraMonth,-1); render(); };
+  if(carNext) carNext.onclick = ()=>{ carteiraMonth = shiftMonth(carteiraMonth,1); render(); };
   const adjustBtn = document.getElementById('adjustBtn');
   if(adjustBtn) adjustBtn.onclick = ()=> openTxSheet(null);
   const exportBtn = document.getElementById('exportBtn');
@@ -477,35 +514,64 @@ document.getElementById('fab').onclick = ()=> openTxSheet(null);
 
 // -- day sheet (tap a calendar day) --
 function openDaySheet(day){
+  const dateStr = calMonth+'-'+pad2(day);
   const items = state.recurring.filter(it=>recIsActive(it,calMonth) && clampDay(calMonth,it.dueDay)===day);
-  const dateLabel = new Date(calMonth+'-'+pad2(day)+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'long'});
-  const rows = items.map(it=>{
+  const dayTx = state.transactions.filter(t=>t.date===dateStr).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  const dateLabel = new Date(dateStr+'T00:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'long'});
+
+  const txRows = dayTx.map(t=>ledgerRowHTML({...t, isRecurring:false})).join('');
+  const recRows = items.map(it=>{
     const occ = getOcc(it, calMonth);
     const last = recIsLast(it, calMonth);
     return `<div class="rec-row" data-dayitem="${it.id}">
       <div class="top">
         <div class="name">${CAT_MAP[it.category]?.ic||''} ${escapeHtml(it.name)}${last?'<span class="badge-last">última parcela</span>':''}</div>
-        <div class="amt ${it.type==='entrada'?'in':'out'}" style="font-weight:600; font-size:14px;">${occ.amount!=null ? fmt(occ.amount) : '—'}</div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <div class="amt ${it.type==='entrada'?'in':'out'}" style="font-weight:600; font-size:14px;">${occ.amount!=null ? fmt(occ.amount) : '—'}</div>
+          <div class="check-box ${occ.paid?'on':''}" data-quickcheck="${it.id}" style="cursor:pointer;">${occ.paid?'✓':''}</div>
+        </div>
       </div>
-      <div class="meta">${it.type==='entrada'?'a receber':'a pagar'} ${occ.paid?'· ✓ marcado':''}</div>
+      <div class="meta">${it.type==='entrada'?'a receber':'a pagar'}</div>
     </div>`;
   }).join('');
+
   sheetEl.innerHTML = `
     <div class="sheet-handle"></div>
     <div class="sheet-title" style="text-transform:capitalize;">${dateLabel}</div>
-    ${rows || '<div class="empty">Nada fixo/recorrente cadastrado pra esse dia.</div>'}
-    <button class="save-btn" id="dayAddBtn" style="background:var(--panel-2); color:var(--paper); border:1px solid var(--line-strong); margin-top:6px;">+ nova conta fixa nesse dia</button>
+
+    <div class="section-title" style="margin-top:0;"><h2 style="font-size:15px;">Lançamentos avulsos</h2></div>
+    <div class="ledger">${txRows || '<div class="empty">Nenhum lançamento avulso nesse dia.</div>'}</div>
+
+    <div class="section-title"><h2 style="font-size:15px;">Contas fixas/recorrentes</h2></div>
+    ${recRows || '<div class="empty">Nada fixo/recorrente cadastrado pra esse dia.</div>'}
+
+    <button class="save-btn" id="dayAddTxBtn" style="margin-top:14px;">+ novo lançamento avulso nesse dia</button>
+    <button class="save-btn" id="dayAddBtn" style="background:var(--panel-2); color:var(--paper); border:1px solid var(--line-strong);">+ nova conta fixa nesse dia</button>
   `;
   overlay.classList.add('show');
+  document.querySelectorAll('#sheet [data-entry]').forEach(el=>{
+    el.onclick = ()=> openTxSheet(state.transactions.find(t=>t.id===el.dataset.entry));
+  });
+  document.querySelectorAll('[data-quickcheck]').forEach(el=>{
+    el.onclick = async (ev)=>{
+      ev.stopPropagation();
+      const it = state.recurring.find(r=>r.id===el.dataset.quickcheck);
+      const occ = getOcc(it, calMonth);
+      it.occurrences[calMonth] = { amount: occ.amount, paid: !occ.paid };
+      await saveState();
+      openDaySheet(day);
+    };
+  });
   document.querySelectorAll('[data-dayitem]').forEach(el=>{
     el.onclick = ()=> openOccSheet(state.recurring.find(r=>r.id===el.dataset.dayitem), calMonth);
   });
+  document.getElementById('dayAddTxBtn').onclick = ()=> openTxSheet(null, dateStr);
   document.getElementById('dayAddBtn').onclick = ()=> openRecFormSheet(day);
 }
 
 // -- normal transaction sheet --
-function openTxSheet(tx){ editingTx = tx; renderTxSheet(tx ? tx.type : 'saida'); overlay.classList.add('show'); }
-function renderTxSheet(type){
+function openTxSheet(tx, prefillDate){ editingTx = tx; renderTxSheet(tx ? tx.type : 'saida', prefillDate); overlay.classList.add('show'); }
+function renderTxSheet(type, prefillDate){
   const t = editingTx;
   const cats = catsForType(type);
   const selCat = (t && t.type===type) ? t.category : cats[0].id;
@@ -521,12 +587,12 @@ function renderTxSheet(type){
       <div class="cat-grid">${cats.map(c=>`<div class="cat-pick ${c.id===selCat?'sel':''}" data-cat="${c.id}"><div class="ic">${c.ic}</div><div class="lb">${c.lb}</div></div>`).join('')}</div>
     </div>
     <div class="field"><label>Nota / descrição (opcional)</label><input id="txDesc" type="text" placeholder="ex: mercado, uber, salário..." value="${t?escapeHtml(t.desc||''):''}"></div>
-    <div class="field"><label>Data</label><input id="txDate" type="date" value="${t?t.date:todayISO()}"></div>
+    <div class="field"><label>Data</label><input id="txDate" type="date" value="${t?t.date:(prefillDate||todayISO())}"></div>
     <button class="save-btn" id="txSave">${t?'Salvar alterações':'Adicionar lançamento'}</button>
     ${t?'<button class="del-btn" id="txDel">Excluir lançamento</button>':''}
   `;
-  document.getElementById('btnIn').onclick = ()=> renderTxSheet('entrada');
-  document.getElementById('btnOut').onclick = ()=> renderTxSheet('saida');
+  document.getElementById('btnIn').onclick = ()=> renderTxSheet('entrada', prefillDate);
+  document.getElementById('btnOut').onclick = ()=> renderTxSheet('saida', prefillDate);
   document.querySelectorAll('[data-cat]').forEach(el=>{
     el.onclick = ()=>{ document.querySelectorAll('[data-cat]').forEach(x=>x.classList.remove('sel')); el.classList.add('sel'); };
   });
@@ -546,6 +612,7 @@ function renderTxSheet(type){
   };
   const delBtn = document.getElementById('txDel');
   if(delBtn) delBtn.onclick = async ()=>{
+    if(!(await showConfirm('Excluir este lançamento? Essa ação não pode ser desfeita.'))) return;
     state.transactions = state.transactions.filter(x=>x.id!==editingTx.id);
     await saveState(); closeSheet(); render();
   };
@@ -626,6 +693,10 @@ function openOccSheet(item, mk){
       <div class="check-box ${occ.paid?'on':''}" id="occPaidBox">${occ.paid?'✓':''}</div>
       <div>Marcar como paga/recebida (lembrete, não mexe no saldo)</div>
     </div>
+    <div class="field"><label>Aplicar esse valor também nos próximos meses</label>
+      <input id="occApplyMonths" type="number" min="1" placeholder="deixe em branco = só este mês">
+      <div class="hint" style="margin-top:6px;">Ex: 3 aplica esse valor neste mês e nos 2 seguintes. Só entra nos meses em que a conta ainda estiver ativa.</div>
+    </div>
     <button class="save-btn" id="occSave">Salvar</button>
     <button class="del-btn" id="recDelBtn">Excluir esta conta fixa (todas as parcelas)</button>
   `;
@@ -639,10 +710,17 @@ function openOccSheet(item, mk){
   document.getElementById('occSave').onclick = async ()=>{
     const val = document.getElementById('occAmt').value;
     const amount = val==='' ? null : parseFloat(val);
-    item.occurrences[mk] = { amount, paid: paidState };
+    const monthsN = parseInt(document.getElementById('occApplyMonths').value) || 1;
+    for(let i=0; i<monthsN; i++){
+      const targetMk = shiftMonth(mk, i);
+      if(!recIsActive(item, targetMk)) break;
+      const existing = item.occurrences[targetMk] || {amount:null, paid:false};
+      item.occurrences[targetMk] = { amount, paid: i===0 ? paidState : existing.paid };
+    }
     await saveState(); closeSheet(); render();
   };
   document.getElementById('recDelBtn').onclick = async ()=>{
+    if(!(await showConfirm('Excluir esta conta fixa e TODAS as parcelas (passadas e futuras)? Essa ação não pode ser desfeita.'))) return;
     state.recurring = state.recurring.filter(r=>r.id!==item.id);
     await saveState(); closeSheet(); render();
   };
@@ -665,13 +743,13 @@ function handleImportFile(e){
   reader.onload = async (ev)=>{
     try{
       const data = JSON.parse(ev.target.result);
-      if(!data.transactions || !data.recurring){ alert('Esse arquivo não parece ser um backup válido da Caderneta.'); return; }
-      const ok = confirm('Isso vai substituir todos os dados atuais do app pelos dados desse backup. Quer continuar?');
+      if(!data.transactions || !data.recurring){ await showAlert('Esse arquivo não parece ser um backup válido da Caderneta.'); return; }
+      const ok = await showConfirm('Isso vai substituir todos os dados atuais do app pelos dados desse backup. Quer continuar?');
       if(!ok) return;
       state = { transactions:data.transactions, recurring:data.recurring };
       await saveState(); render();
-      alert('Backup importado com sucesso!');
-    }catch(err){ alert('Não consegui ler esse arquivo.'); }
+      await showAlert('Backup importado com sucesso!');
+    }catch(err){ await showAlert('Não consegui ler esse arquivo.'); }
   };
   reader.readAsText(file);
   e.target.value = '';
